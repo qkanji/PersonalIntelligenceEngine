@@ -1,0 +1,5 @@
+.idea
+__pycache__
+.venv
+notebooks_*
+poppler*
