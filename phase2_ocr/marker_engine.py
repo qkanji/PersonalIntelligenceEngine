@@ -1,12 +1,17 @@
 """
 Marker-PDF Wrapper
 Converts PDF files to Markdown using marker-pdf with GPU acceleration.
+Splits multi-page PDFs to process one page at a time (saves VRAM).
 """
 
+import os
+import contextlib
 import torch
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.config.parser import ConfigParser
+
+from phase2_ocr.pdf_slicer import split_pdf, cleanup_splits
 
 
 class MarkerEngine:
@@ -27,13 +32,12 @@ class MarkerEngine:
 
         print("Loading marker-pdf models (first run downloads ~2GB)...")
 
-        # Configure for GPU if available
         config_parser = ConfigParser({
             "output_format": "markdown",
-            "force_ocr": True,  # Force OCR for handwriting
+            "force_ocr": False,
+            "batch_size": 1,
         })
 
-        # Create model dict - this loads all required models
         self._converter = PdfConverter(
             config=config_parser.generate_config_dict(),
             artifact_dict=create_model_dict(),
@@ -43,38 +47,32 @@ class MarkerEngine:
         print(f"Marker-pdf ready on: {device.upper()}")
 
     def convert(self, pdf_path: str) -> str:
-        """
-        Convert a single PDF to Markdown.
-
-        Args:
-            pdf_path: Path to the PDF file
-
-        Returns:
-            Markdown string
-        """
+        """Convert a PDF to Markdown, processing one page at a time."""
         self._init_converter()
 
-        # Run conversion
-        result = self._converter(pdf_path)
-
-        # Extract markdown from result
-        return result.markdown
-
-
-def get_engine() -> MarkerEngine:
-    """Get the singleton MarkerEngine instance."""
-    return MarkerEngine()
+        page_paths = split_pdf(pdf_path)
+        try:
+            parts = []
+            for p in page_paths:
+                # Suppress marker's internal progress bars
+                with open(os.devnull, 'w') as devnull:
+                    with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
+                        result = self._converter(p)
+                parts.append(result.markdown)
+                
+                # Clear GPU cache after each page to prevent VRAM buildup
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    
+            return "\n\n".join(parts)
+        finally:
+            cleanup_splits(page_paths, pdf_path)
+            # Final cleanup
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def convert_pdf_to_markdown(pdf_path: str) -> str:
-    """
-    Convenience function to convert a PDF to Markdown.
-
-    Args:
-        pdf_path: Path to the PDF file
-
-    Returns:
-        Markdown string
-    """
-    engine = get_engine()
+    """Convenience function to convert a PDF to Markdown."""
+    engine = MarkerEngine()
     return engine.convert(pdf_path)
