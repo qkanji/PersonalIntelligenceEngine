@@ -62,9 +62,34 @@ def export_pages_batch(pages_batch):
 
         # Parse JSON results
         try:
-            json_start = max(stdout.find('{'), stdout.find('['))
-            if json_start > 0:
+            # Find JSON/List start (first [ or {)
+            idx_obj = stdout.find('{')
+            idx_arr = stdout.find('[')
+            
+            if idx_obj == -1 and idx_arr == -1:
+                return {p['id']: (False, "No JSON output found") for p in pages_batch}
+                
+            if idx_obj == -1:
+                json_start = idx_arr
+            elif idx_arr == -1:
+                json_start = idx_obj
+            else:
+                json_start = min(idx_obj, idx_arr)
+            
+            if json_start >= 0:
                 stdout = stdout[json_start:]
+                
+            # Attempt to find the end of the JSON to avoid "Extra data" errors from trailing output
+            # If it starts with [, it should end with ]
+            # If it starts with {, it should end with }
+            if stdout.lstrip().startswith('['):
+                json_end = stdout.rfind(']')
+                if json_end != -1:
+                    stdout = stdout[:json_end+1]
+            elif stdout.lstrip().startswith('{'):
+                json_end = stdout.rfind('}')
+                if json_end != -1:
+                    stdout = stdout[:json_end+1]
 
             results = json.loads(stdout)
             if not isinstance(results, list):
