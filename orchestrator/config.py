@@ -57,7 +57,7 @@ WORKER_SCRIPT_URL: str = _env(
 # Pip packages the worker needs (space-separated)
 WORKER_DEPS: str = _env(
     "WORKER_DEPS",
-    "vllm==0.17.1 transformers>=4.40.0 sentence-transformers pinecone google-cloud-storage qwen-vl-utils",
+    "vllm==0.17.1 transformers>=4.40.0 sentence-transformers pinecone google-cloud-storage gcloud-aio-storage aiohttp qwen-vl-utils",
 )
 # ── Pub/Sub (Pull) ──────────────────────────────────────────────────────
 PUBSUB_SUBSCRIPTION: str = _env("PUBSUB_SUBSCRIPTION", "rag-jobs-pull")

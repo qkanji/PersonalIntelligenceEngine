@@ -13,3 +13,5 @@ pinecone>=3.0.0
 # Utilities
 Pillow>=10.0.0
 tqdm>=4.66.0
+gcloud-aio-storage
+aiohttp

@@ -36,7 +36,7 @@ from tqdm import tqdm
 DEFAULT_NOTEBOOKS_DIR = "notebooks_pdf"
 DEFAULT_BUCKET = "pie-data"
 DEFAULT_PUBSUB_TOPIC = "rag-jobs-pending"
-DPI = 300
+DPI = 150
 LOCAL_IMAGE_DIR = Path("input_images")  # temp local staging area
 
 

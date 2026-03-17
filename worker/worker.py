@@ -28,6 +28,7 @@ GCP_SA_KEY_JSON_B64 — base64-encoded GCP service-account JSON
 RUNPOD_POD_ID       — injected automatically by RunPod runtime
 """
 
+import asyncio
 import base64
 import gc
 import json
@@ -36,10 +37,13 @@ import re
 import sys
 import tempfile
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import aiohttp
 import requests
+from gcloud.aio.storage import Storage
 
 print("[worker] imports OK", flush=True)
 
@@ -155,6 +159,8 @@ def build_ocr_prompt(image_paths: list[Path], processor) -> dict:
             "content": (
                 "You are an OCR assistant. Convert the document images into clean Markdown. "
                 "Preserve headings, lists, tables, and math (use LaTeX $...$ and $$...$$). "
+                "CRITICAL: Do not use unicode box-drawing characters; represent trees/diagrams as standard nested markdown lists. "
+                "Never use unicode subscripts/superscripts; always use LaTeX for chemical formulas and math. "
                 "Output ONLY the Markdown, no commentary."
             )
         },
@@ -172,19 +178,143 @@ def build_ocr_prompt(image_paths: list[Path], processor) -> dict:
     return {"prompt": prompt, "multi_modal_data": {"image": images}}
 
 
-def run_ocr(structure: dict, images_root: Path) -> list[dict]:
+async def process_image(
+    img_path: Path, 
+    processor, 
+    engine, 
+    sampling_params, 
+    image_semaphore: asyncio.Semaphore
+) -> str:
+    """Process a single image concurrently via AsyncLLMEngine."""
+    async with image_semaphore:
+        # Build prompt securely. This loads the image into memory via PIL (offloaded to thread).
+        prompt_data = await asyncio.to_thread(build_ocr_prompt, [img_path], processor)
+        
+        request_id = str(uuid.uuid4())
+        results_generator = engine.generate(
+            prompt_data,
+            sampling_params,
+            request_id,
+        )
+        
+        final_output = None
+        async for request_output in results_generator:
+            final_output = request_output
+            
+        text = final_output.outputs[0].text.strip()
+        
+        # Remove reasoning chains (like DeepSeek R1 or Qwen reasoning variants use)
+        if "</think>" in text:
+            text = text.split("</think>")[-1].strip()
+            
+        return text
+
+
+async def process_page(
+    page: dict,
+    structure: dict,
+    images_root: Path,
+    storage: Storage,
+    processor,
+    engine,
+    sampling_params,
+    page_semaphore: asyncio.Semaphore,
+    image_semaphore: asyncio.Semaphore,
+    progress_state: dict
+) -> dict | None:
+    """Process all images for a given page sequentially, then upload."""
+    async with page_semaphore:
+        gcs_folder = page.get("gcs_folder", "")
+        num_images = page.get("num_images", 1)
+        page_name = page["name"]
+        
+        # Download images for this page sequentially or via aio (we do via aio concurrently)
+        page_dir = images_root / sanitize_id(page_name)
+        page_dir.mkdir(parents=True, exist_ok=True)
+        
+        async def dl_image(idx: int):
+            img_blob = f"{gcs_folder}/p{idx:04d}.png"
+            local_img = page_dir / f"p{idx:04d}.png"
+            if not local_img.exists():
+                try:
+                    res = await storage.download(GCS_BUCKET, img_blob)
+                    local_img.write_bytes(res)
+                except Exception as e:
+                    print(f"  ⚠ Failed to download {img_blob}: {e}")
+            return local_img
+            
+        download_tasks = [dl_image(i) for i in range(1, num_images + 1)]
+        await asyncio.gather(*download_tasks)
+        
+        image_files = sorted(page_dir.glob("*.png"))
+        if not image_files:
+            print(f"  ⚠ No images for: {page_name}")
+            return None
+            
+        # Process every image on this page concurrently
+        image_tasks = [
+            process_image(p, processor, engine, sampling_params, image_semaphore)
+            for p in image_files
+        ]
+        
+        # gather preserves the order of task creation, ensuring stitched text is sequentially correct
+        image_texts = await asyncio.gather(*image_tasks)
+        
+        # Concatenate markdown
+        full_markdown = "\n\n".join(image_texts).strip()
+        
+        # Prepend frontmatter
+        notebook = structure.get("notebook", "")
+        frontmatter = (
+            f"---\n"
+            f"notebook: {notebook}\n"
+            f"section: {page.get('section', '')}\n"
+            f"page: {page_name}\n"
+            f"order: {page.get('order', 0)}\n"
+            f"source_pdf: {page_name}\n"
+            f"---\n\n"
+        )
+        full_md = frontmatter + full_markdown
+        
+        # Checkpoint: upload .md to GCS immediately over async as strict utf-8 bytes
+        md_blob = f"{USER_EMAIL}/output_md/{sanitize_id(page_name)}.md"
+        await storage.upload(GCS_BUCKET, md_blob, full_md.encode("utf-8"), content_type="text/markdown")
+        
+        progress_state["completed"] += 1
+        comp = progress_state["completed"]
+        tot = progress_state["total"]
+        elapsed = time.time() - progress_state["start_time"]
+        eta_secs = (elapsed / comp) * (tot - comp) if comp > 0 else 0
+        
+        def fmt_t(s):
+            if s < 60: return f"{s:.0f}s"
+            if s < 3600: return f"{s/60:.1f}m"
+            return f"{s/3600:.1f}h"
+            
+        print(f"  ✅ {page_name} → {len(full_markdown)} chars | {comp}/{tot} pages (ETA: {fmt_t(eta_secs)})")
+        
+        return {
+            "name": page_name,
+            "section": page.get("section", ""),
+            "order": page.get("order", 0),
+            "markdown": full_md,
+        }
+
+
+async def run_ocr_async(structures: list[dict], images_root: Path) -> list[dict]:
     """
-    Run vLLM offline OCR on all pages.  Returns a list of
-    {"name", "section", "order", "markdown"} dicts.
+    Setup Async vLLM Engine and process all pages asynchronously.
     """
-    from vllm import LLM, SamplingParams  # type: ignore[import-untyped]
+    from vllm.engine.arg_utils import AsyncEngineArgs
+    from vllm.engine.async_llm_engine import AsyncLLMEngine
+    from vllm import SamplingParams
     from transformers import AutoProcessor
 
     print(f"[worker] Loading processor for chat templating...")
     processor = AutoProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
 
-    print(f"[worker] Loading vLLM model: {MODEL_ID} (8-bit quantized)")
-    llm = LLM(
+    print(f"[worker] Initializing Async vLLM Engine: {MODEL_ID} (8-bit)")
+    engine_args = AsyncEngineArgs(
         model=MODEL_ID,
         dtype="float16",
         quantization="fp8",
@@ -192,102 +322,69 @@ def run_ocr(structure: dict, images_root: Path) -> list[dict]:
         max_model_len=MAX_MODEL_LEN,
         limit_mm_per_prompt={"image": MAX_IMAGES_PER_PROMPT},
         trust_remote_code=True,
+        enable_prefix_caching=True,
     )
-    sampling = SamplingParams(temperature=0.0, max_tokens=4096)
+    engine = AsyncLLMEngine.from_engine_args(engine_args)
+    # Increase max_tokens so reasoning models have enough runway to think AND output the final markdown without getting cut off
+    sampling = SamplingParams(temperature=0.0, max_tokens=8192)
 
-    pages = structure.get("pages", [])
-    results: list[dict] = []
-
+    # Throttling
+    page_semaphore = asyncio.Semaphore(5)    # Max concurrent pages
+    image_semaphore = asyncio.Semaphore(150) # Peak Host RAM cap for loaded PIL images
+    
     # Build "resume" set — skip pages whose .md already exists in GCS
     existing_md = set(list_blobs_with_prefix(
         GCS_BUCKET,
         f"{USER_EMAIL}/output_md/",
     ))
 
-    # Process in batches of 8
-    batch_size = 8
-    pending = []
-    for page in pages:
-        gcs_folder = page.get("gcs_folder", "")
-        md_blob = f"{USER_EMAIL}/output_md/{sanitize_id(page['name'])}.md"
-        if md_blob in existing_md:
-            print(f"  ⏩ Skipping (already done): {page['name']}")
-            continue
-        pending.append(page)
-
-    print(f"[worker] {len(pending)} pages to OCR ({len(pages) - len(pending)} already done)")
-
-    for batch_start in range(0, len(pending), batch_size):
-        batch = pending[batch_start : batch_start + batch_size]
-        prompts = []
-        batch_meta = []
-
-        for page in batch:
-            gcs_folder = page["gcs_folder"]
-            num_images = page.get("num_images", 1)
-
-            # Download images for this page
-            page_dir = images_root / sanitize_id(page["name"])
-            page_dir.mkdir(parents=True, exist_ok=True)
-
-            for i in range(1, num_images + 1):
-                img_blob = f"{gcs_folder}/p{i:04d}.png"
-                local_img = page_dir / f"p{i:04d}.png"
-                if not local_img.exists():
-                    download_blob_to_file(GCS_BUCKET, img_blob, local_img)
-
-            image_files = sorted(page_dir.glob("*.png"))
-            if not image_files:
-                print(f"  ⚠ No images for: {page['name']}")
-                continue
-
-            prompt_data = build_ocr_prompt(image_files, processor)
-            prompts.append(prompt_data)
-            batch_meta.append(page)
-
-        if not prompts:
-            continue
-
-        # Run vLLM batch inference
-        print(f"[worker] OCR batch {batch_start // batch_size + 1}: {len(prompts)} page(s)")
-        outputs = llm.generate(prompts, sampling)
-
-        for output, page in zip(outputs, batch_meta):
-            markdown = output.outputs[0].text.strip()
-
-            # Prepend frontmatter
-            notebook = structure.get("notebook", "")
-            frontmatter = (
-                f"---\n"
-                f"notebook: {notebook}\n"
-                f"section: {page.get('section', '')}\n"
-                f"page: {page['name']}\n"
-                f"order: {page.get('order', 0)}\n"
-                f"source_pdf: {page.get('name', '')}\n"
-                f"---\n\n"
-            )
-            full_md = frontmatter + markdown
-
-            results.append({
-                "name": page["name"],
-                "section": page.get("section", ""),
-                "order": page.get("order", 0),
-                "markdown": full_md,
-            })
-
-            # Checkpoint: upload .md to GCS immediately
-            md_blob = f"{USER_EMAIL}/output_md/{sanitize_id(page['name'])}.md"
-            upload_string_to_gcs(GCS_BUCKET, md_blob, full_md)
-            print(f"  ✅ {page['name']} → {len(markdown)} chars")
-
-    # Free VRAM
+    # Iterate over all structure groupings and enqueue pending pages
+    all_page_tasks = []
+    
+    progress_state = {"completed": 0, "total": 0, "start_time": time.time()}
+    
+    # Use gcloud-aio Storage context manager for efficient connection pooling
+    async with aiohttp.ClientSession() as session:
+        async with Storage(session=session) as storage:
+            for structure in structures:
+                notebook_name = structure.get("notebook", "unknown")
+                pages = structure.get("pages", [])
+                
+                pending = []
+                for page in pages:
+                    md_blob = f"{USER_EMAIL}/output_md/{sanitize_id(page['name'])}.md"
+                    if md_blob in existing_md:
+                        print(f"  ⏩ Skipping (already done): {page['name']}")
+                        continue
+                    pending.append(page)
+                    
+                print(f"[worker] {notebook_name}: Enqueueing {len(pending)} pending pages.")
+                
+                for page in pending:
+                    progress_state["total"] += 1
+                    task = asyncio.create_task(
+                        process_page(
+                            page, structure, images_root, storage, 
+                            processor, engine, sampling, 
+                            page_semaphore, image_semaphore,
+                            progress_state
+                        )
+                    )
+                    all_page_tasks.append(task)
+            
+            # Fire all scheduled tasks simultaneously
+            print(f"[worker] Gathering {len(all_page_tasks)} page pipelines...")
+            raw_results = await asyncio.gather(*all_page_tasks)
+            
+    # Free VRAM fully
     import torch
-    del llm
+    del engine
     gc.collect()
     torch.cuda.empty_cache()
-    print("[worker] vLLM model unloaded, VRAM freed")
+    print("[worker] vLLM async model unloaded, VRAM freed")
 
-    return results
+    # Filter out None results
+    return [r for r in raw_results if r]
 
 
 # ── Embedding helpers ────────────────────────────────────────────────────────
@@ -435,20 +532,18 @@ def main():
     images_root = WORK_DIR / "images"
     images_root.mkdir(exist_ok=True)
 
+    structure_data_list = []
     for struct_blob in structure_blobs:
         # Download structure.json
-        local_struct = WORK_DIR / "structure.json"
+        local_struct = WORK_DIR / f"structure_{uuid.uuid4().hex[:8]}.json"
         download_blob_to_file(GCS_BUCKET, struct_blob, local_struct)
 
         with open(local_struct, "r", encoding="utf-8") as f:
-            structure = json.load(f)
+            structure_data_list.append(json.load(f))
 
-        notebook_name = structure.get("notebook", "unknown")
-        pages = structure.get("pages", [])
-        print(f"\n📚 {notebook_name}: {len(pages)} page(s)")
-
-        # 3. OCR all pages
-        results = run_ocr(structure, images_root)
+    # 3. OCR all pages asynchronously via continuous batching
+    if structure_data_list:
+        results = asyncio.run(run_ocr_async(structure_data_list, images_root))
         all_results.extend(results)
 
     # 4. Also pick up any .md files from resumed/prior runs
