@@ -52,6 +52,7 @@ def create_pod(
         "minRAMPerGPU": 16,
         "volumeInGb": 1,
         "env": env_vars,  # REST API takes a plain {key: value} dict
+        "allowedCudaVersions": ["12.6", "12.8", "13.0"],
     }
 
     if docker_command:
@@ -61,7 +62,6 @@ def create_pod(
     resp = requests.post(f"{_BASE}/pods", headers=_headers(), json=body, timeout=30)
     if not resp.ok:
         print(f"[runpod] create_pod failed {resp.status_code}: {resp.text}")
-        print(f"[runpod] request body: {body}")
         resp.raise_for_status()
     pod = resp.json()
     print(f"[runpod] Full create response: {pod}")

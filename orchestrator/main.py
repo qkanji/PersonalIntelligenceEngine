@@ -52,15 +52,9 @@ def _launch_pod(user_email: str, bucket_prefix: str) -> str | None:
 
     fetch_cmd = f"curl -fsSL '{config.WORKER_SCRIPT_URL}' -o /tmp/worker.py"
 
-    # Quote each dep so version specifiers like >=0.8 aren't interpreted
-    # as shell redirection inside the bash -c string.
-    deps_quoted = " ".join(f"'{d}'" for d in config.WORKER_DEPS.split())
-
-    # Each stage echoes a sentinel so we can see exactly where a failure occurs
-    # in container logs. stderr is merged into stdout (2>&1) so pip errors surface.
+    # Since the Docker image (qkanji/pie-worker-gpu) already has all dependencies
+    # and models baked in, we just fetch the latest worker script and run it!
     startup_cmd = " && ".join([
-        "echo '[PIE] stage: pip install'",
-        f"pip install --no-cache-dir {deps_quoted} 2>&1",
         "echo '[PIE] stage: fetch worker'",
         fetch_cmd,
         "echo '[PIE] stage: run worker'",
@@ -74,6 +68,7 @@ def _launch_pod(user_email: str, bucket_prefix: str) -> str | None:
         "PINECONE_INDEX":      config.PINECONE_INDEX,
         "RUNPOD_API_KEY":      config.RUNPOD_API_KEY,
         "GCP_SA_KEY_JSON_B64": config.GCP_SA_KEY_JSON_B64,
+        # "HF_HUB_OFFLINE":      "1",  # Force huggingface tools to use the baked-in cached models
     }
 
     pod_name = f"rag-worker-{user_email.split('@')[0][:12]}-{int(time.time()) % 100000}"
@@ -167,6 +162,7 @@ def _health_check_loop():
             snapshot = dict(_active_pods)
 
         pods_to_remove: list[str] = []
+        pods_to_relaunch: list[dict] = []
 
         for pod_id, info in snapshot.items():
             user_email = info["user_email"]
@@ -185,12 +181,23 @@ def _health_check_loop():
             # 2. Check RunPod status
             status = get_pod_status(pod_id)
             if status in ("EXITED", "TERMINATED", "UNKNOWN"):
-                print(f"[health] Pod {pod_id} ({user_email}): status={status}, removing from tracker")
+                print(f"[health] Pod {pod_id} ({user_email}): status={status}. Terminating and checking if completed.")
+                try:
+                    terminate_pod(pod_id)
+                except Exception as e:
+                    print(f"[health] Failed to terminate {pod_id}: {e}")
+                
+                if _check_done_marker(user_email):
+                    print(f"[health] Pod {pod_id} ({user_email}): done.json found, job completed successfully.")
+                else:
+                    print(f"[health] Pod {pod_id} ({user_email}): done.json missing, likely preempted. Will relaunch.")
+                    pods_to_relaunch.append(info)
+                
                 pods_to_remove.append(pod_id)
                 continue
 
-            # 3. Stale guard — if a pod has been running > 2 hours, kill it
-            max_runtime = 2 * 3600
+            # 3. Stale guard — if a pod has been running > 4 hours, kill it
+            max_runtime = 4 * 3600
             if elapsed > max_runtime:
                 print(f"[health] Pod {pod_id} ({user_email}): exceeded {max_runtime}s, force-terminating")
                 try:
@@ -209,6 +216,11 @@ def _health_check_loop():
             with _lock:
                 for pid in pods_to_remove:
                     _active_pods.pop(pid, None)
+                    
+        # Relaunch preempted pods
+        for info in pods_to_relaunch:
+            print(f"[health] Relaunching pod for {info['user_email']} after preemption...")
+            _launch_pod(info["user_email"], info["bucket_prefix"])
 
 
 # ── Entrypoint ───────────────────────────────────────────────────────────────

@@ -21,10 +21,9 @@ RUNPOD_API_KEY: str = _required_env("RUNPOD_API_KEY")
 
 # GPU pod template
 RUNPOD_GPU_TYPE: str = _env("RUNPOD_GPU_TYPE", "NVIDIA GeForce RTX 4090")
-# Community image: CUDA 12.4 + torch 2.6.0 — compatible with vllm>=0.8 without
-# triggering a torch reinstall.
-RUNPOD_IMAGE: str = _env("RUNPOD_IMAGE", "madiator2011/better-pytorch:cuda12.4-torch2.6.0")
-RUNPOD_CLOUD_TYPE: str = _env("RUNPOD_CLOUD_TYPE", "SECURE")
+# Custom image with Python, PyTorch 2.10, worker dependencies, and cached models
+RUNPOD_IMAGE: str = _env("RUNPOD_IMAGE", "qkanji/pie-worker-gpu:cu126")
+RUNPOD_CLOUD_TYPE: str = _env("RUNPOD_CLOUD_TYPE", "COMMUNITY")
 # Container disk is ephemeral (destroyed on pod termination) and only billed while running.
 # 35 GB covers: base image (~5) + vLLM deps (~7) + Qwen2.5-VL-7B (~14) + BGE-M3 (~2.3) + images (~1.5) + buffer
 # No network volume is used — model weights are re-downloaded each run (~1-2 min on RunPod's network).
