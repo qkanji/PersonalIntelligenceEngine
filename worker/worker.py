@@ -228,8 +228,10 @@ async def process_page(
         num_images = page.get("num_images", 1)
         page_name = page["name"]
         
+        unique_id = f"{sanitize_id(page.get('section', ''))}_{page.get('order', 0):03d}_{sanitize_id(page_name)}"
+        
         # Download images for this page sequentially or via aio (we do via aio concurrently)
-        page_dir = images_root / sanitize_id(page_name)
+        page_dir = images_root / unique_id
         page_dir.mkdir(parents=True, exist_ok=True)
         
         async def dl_image(idx: int):
@@ -269,6 +271,7 @@ async def process_page(
             f"---\n"
             f"notebook: {notebook}\n"
             f"section: {page.get('section', '')}\n"
+            f"path: {page.get('path', '')}\n"
             f"page: {page_name}\n"
             f"order: {page.get('order', 0)}\n"
             f"source_pdf: {page_name}\n"
@@ -277,7 +280,7 @@ async def process_page(
         full_md = frontmatter + full_markdown
         
         # Checkpoint: upload .md to GCS immediately over async as strict utf-8 bytes
-        md_blob = f"{USER_EMAIL}/output_md/{sanitize_id(page_name)}.md"
+        md_blob = f"{USER_EMAIL}/output_md/{unique_id}.md"
         await storage.upload(GCS_BUCKET, md_blob, full_md.encode("utf-8"), content_type="text/markdown")
         
         progress_state["completed"] += 1
@@ -352,7 +355,8 @@ async def run_ocr_async(structures: list[dict], images_root: Path) -> list[dict]
                 
                 pending = []
                 for page in pages:
-                    md_blob = f"{USER_EMAIL}/output_md/{sanitize_id(page['name'])}.md"
+                    unique_id = f"{sanitize_id(page.get('section', ''))}_{page.get('order', 0):03d}_{sanitize_id(page['name'])}"
+                    md_blob = f"{USER_EMAIL}/output_md/{unique_id}.md"
                     if md_blob in existing_md:
                         print(f"  ⏩ Skipping (already done): {page['name']}")
                         continue
@@ -378,9 +382,21 @@ async def run_ocr_async(structures: list[dict], images_root: Path) -> list[dict]
             
     # Free VRAM fully
     import torch
+    
+    if hasattr(engine, 'shutdown_background_loop'):
+        engine.shutdown_background_loop()
+    
     del engine
+    del processor
     gc.collect()
     torch.cuda.empty_cache()
+    
+    try:
+        from vllm.distributed.parallel_state import destroy_model_parallel
+        destroy_model_parallel()
+    except Exception:
+        pass
+    
     print("[worker] vLLM async model unloaded, VRAM freed")
 
     # Filter out None results

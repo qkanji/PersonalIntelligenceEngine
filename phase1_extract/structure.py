@@ -34,8 +34,10 @@ def parse_structure(root, parent_path=""):
     """Parse XML to extract pages with their section paths."""
     pages = []
 
-    for section_group in root.findall(".//one:SectionGroup", NS):
+    for section_group in root.findall("one:SectionGroup", NS):
         sg_name = section_group.get("name", "Group")
+        if sg_name == "_Content Library" or "content library" in sg_name.lower():
+            continue
         sg_path = f"{parent_path}/{sg_name}" if parent_path else sg_name
         pages.extend(parse_structure(section_group, sg_path))
 
