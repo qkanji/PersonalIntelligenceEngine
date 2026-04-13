@@ -5,3 +5,4 @@ notebooks_*
 poppler*
 personal-intelligence-engine*.json
 input_images
+.playwright-mcp

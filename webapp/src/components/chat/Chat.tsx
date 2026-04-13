@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { useChat } from '@ai-sdk/react';
+import { useChat } from 'ai/react';
 import { Sparkles, Image as ImageIcon, BookOpen, PenTool, SendHorizonal } from 'lucide-react';
 import { NotebookPicker, NOTEBOOKS } from './NotebookPicker';
 import { MessageBubble } from './MessageBubble';
@@ -19,11 +19,11 @@ export default function Chat() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const hasMessages = messages.length > 0;
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
-
-  const hasMessages = messages.length > 0;
 
   return (
     <div className="flex flex-col h-full w-full relative pb-4 md:pb-6">
@@ -77,7 +77,7 @@ export default function Chat() {
       {/* Bottom Input Area */}
       <div className={`w-full max-w-3xl mx-auto transition-all duration-500 ease-in-out ${hasMessages ? 'absolute bottom-0 md:bottom-2 bg-white/80 backdrop-blur-xl border border-slate-100 p-2 md:p-3 rounded-[2rem] shadow-[0_-10px_40px_-15px_rgba(0,0,0,0.05)]' : 'px-4 lg:px-0'}`}>
         {!hasMessages && (
-           <div className="w-full max-w-2xl mx-auto mb-6 opacity-0 animate-[fadeIn_0.5s_ease-out_0.2s_forwards]">
+           <div className="w-full max-w-2xl mx-auto mb-6">
              <form 
                onSubmit={handleSubmit}
                className="relative flex items-center w-full bg-white border border-slate-200 shadow-sm hover:shadow-md transition-shadow rounded-[2rem] px-5 py-3 md:py-4 focus-within:ring-2 focus-within:ring-indigo-500/20 focus-within:border-indigo-400"
@@ -85,13 +85,13 @@ export default function Chat() {
                <input
                  className="flex-1 bg-transparent border-0 outline-none text-slate-800 text-[16px] placeholder:text-slate-400 placeholder:font-normal py-1 pr-12 min-h-12"
                  placeholder="Ask PIE anything about your notes..."
-                 value={input}
+                 value={input || ''}
                  onChange={handleInputChange}
                  autoFocus
                />
                <button 
                  type="submit" 
-                 disabled={!input.trim()}
+                 disabled={!input?.trim()}
                  className="absolute right-3 p-2.5 rounded-full bg-slate-900 text-white disabled:bg-slate-100 disabled:text-slate-400 transition-colors"
                >
                  <SendHorizonal className="h-5 w-5" />
@@ -124,12 +124,12 @@ export default function Chat() {
             <input
               className="flex-1 bg-transparent border-0 outline-none text-slate-800 text-[15px] placeholder:text-slate-400 py-3 pr-2"
               placeholder="Ask a follow-up question..."
-              value={input}
+              value={input || ''}
               onChange={handleInputChange}
             />
             <button 
               type="submit" 
-              disabled={!input.trim()}
+              disabled={!input?.trim()}
               className="p-2 rounded-full hover:bg-slate-200 text-slate-800 disabled:opacity-50 transition-colors shrink-0"
             >
                <SendHorizonal className="h-5 w-5" />

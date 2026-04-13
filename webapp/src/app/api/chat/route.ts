@@ -67,7 +67,7 @@ If the notes do not contain the answer, politely state that you cannot find the 
 --- RETRIEVED CONTEXT ---
 ${contextText || "No relevant notes found for this query."}`;
 
-    const result = streamText({
+    const result = await streamText({
       model: openai('gpt-4o-mini'),
       system: systemPrompt,
       messages,
