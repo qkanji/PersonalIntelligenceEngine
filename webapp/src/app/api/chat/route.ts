@@ -68,7 +68,7 @@ If the notes do not contain the answer, politely state that you cannot find the 
 ${contextText || "No relevant notes found for this query."}`;
 
     const result = streamText({
-      model: openai('gpt-4o-mini'),
+      model: openai('gpt-5-nano'),
       system: systemPrompt,
       messages,
     });
