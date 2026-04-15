@@ -33,8 +33,7 @@ export function NotebookPicker({ selectedNotebooks, onChange }: NotebookPickerPr
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" className="h-10 px-4 py-2 gap-2 text-base font-normal max-w-[280px] sm:max-w-xs md:max-w-sm truncate text-slate-700 bg-white/50 backdrop-blur-md border border-slate-200/60 shadow-sm rounded-2xl hover:bg-slate-50 transition-colors shrink-0 flex items-center justify-between">
+      <DropdownMenuTrigger className="inline-flex shrink-0 items-center justify-center font-medium transition-all outline-none disabled:pointer-events-none disabled:opacity-50 h-10 px-4 py-2 gap-2 text-base max-w-[280px] sm:max-w-xs md:max-w-sm truncate text-slate-700 bg-white/50 backdrop-blur-md border border-slate-200/60 shadow-sm rounded-2xl hover:bg-slate-50 flex items-center justify-between">
           <span className="truncate">
             {selectedNotebooks.length === 0 
               ? "Select Notebooks" 
@@ -43,7 +42,6 @@ export function NotebookPicker({ selectedNotebooks, onChange }: NotebookPickerPr
                 : `${selectedNotebooks.length} Notebooks`}
           </span>
           <ChevronDown className="h-4 w-4 opacity-50 flex-none" />
-        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-[300px] p-2 rounded-2xl shadow-xl border-slate-200">
         <div className="px-2 py-1.5 text-xs font-medium text-slate-500 uppercase tracking-widest">
