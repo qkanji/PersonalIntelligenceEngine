@@ -34,7 +34,7 @@ from tqdm import tqdm
 
 # ── Config defaults ──────────────────────────────────────────────────────────
 DEFAULT_NOTEBOOKS_DIR = "notebooks_pdf"
-DEFAULT_BUCKET = "pie-data"
+DEFAULT_BUCKET = os.environ.get("GCS_BUCKET")
 DEFAULT_PUBSUB_TOPIC = "rag-jobs-pending"
 DPI = 150
 LOCAL_IMAGE_DIR = Path("input_images")  # temp local staging area

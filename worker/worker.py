@@ -12,17 +12,13 @@ Pipeline
 3. For each page folder, download PNGs from GCS.
 4. Run Qwen3.5-9B (FP8, vLLM offline) to OCR every page.
 5. Upload resulting .md files to GCS as checkpoints.
-6. After OCR is done, free VRAM and load BGE-M3.
-7. Chunk all markdown, embed with BGE-M3, upsert to Pinecone.
-8. Write done.json to GCS.
-9. Self-terminate via RunPod API.
+6. Write done.json to GCS.
+7. Self-terminate via RunPod API.
 
 Environment variables (set by the orchestrator)
 -----------------------------------------------
 USER_EMAIL          — GCS folder prefix / Pinecone metadata
 GCS_BUCKET          — bucket name
-PINECONE_API_KEY    — Pinecone API key
-PINECONE_INDEX      — Pinecone index name
 RUNPOD_API_KEY      — for self-termination
 GCP_SA_KEY_JSON_B64 — base64-encoded GCP service-account JSON
 RUNPOD_POD_ID       — injected automatically by RunPod runtime
@@ -50,9 +46,7 @@ print("[worker] imports OK", flush=True)
 # ── Config from environment ──────────────────────────────────────────────────
 
 USER_EMAIL       = os.environ["USER_EMAIL"]
-GCS_BUCKET       = os.environ.get("GCS_BUCKET", "pie-data")
-PINECONE_API_KEY = os.environ["PINECONE_API_KEY"]
-PINECONE_INDEX   = os.environ.get("PINECONE_INDEX", "qayim-bge-m3-index")
+GCS_BUCKET       = os.environ["GCS_BUCKET"]
 RUNPOD_API_KEY   = os.environ.get("RUNPOD_API_KEY", "")
 POD_ID           = os.environ.get("RUNPOD_POD_ID", "")
 
@@ -61,13 +55,6 @@ MODEL_ID         = "lovedheart/Qwen3.5-9B-FP8"
 GPU_UTIL         = 0.90
 MAX_MODEL_LEN    = 40960
 MAX_IMAGES_PER_PROMPT = 75
-
-# Embedding / chunking
-EMBED_MODEL_ID   = "BAAI/bge-m3"
-CHUNK_WORDS      = 380
-OVERLAP_WORDS    = 50
-EMBED_BATCH      = 32
-UPSERT_BATCH     = 100
 
 # Working directory
 WORK_DIR = Path(tempfile.mkdtemp(prefix="rag_worker_"))
@@ -141,6 +128,9 @@ def list_blobs_with_prefix(bucket_name: str, prefix: str) -> list[str]:
 
 
 # ── OCR helpers ──────────────────────────────────────────────────────────────
+
+def sanitize_id(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_\-]", "_", s)[:80]
 
 def build_ocr_prompt(image_paths: list[Path], processor) -> dict:
     """
@@ -403,122 +393,6 @@ async def run_ocr_async(structures: list[dict], images_root: Path) -> list[dict]
     return [r for r in raw_results if r]
 
 
-# ── Embedding helpers ────────────────────────────────────────────────────────
-
-def sanitize_id(s: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_\-]", "_", s)[:80]
-
-
-def sliding_window_chunks(text: str, chunk_words: int, overlap_words: int) -> list[str]:
-    words = text.split()
-    if not words:
-        return []
-    chunks = []
-    step = max(1, chunk_words - overlap_words)
-    start = 0
-    while start < len(words):
-        end = min(start + chunk_words, len(words))
-        chunks.append(" ".join(words[start:end]))
-        if end == len(words):
-            break
-        start += step
-    return chunks
-
-
-def parse_frontmatter(text: str) -> tuple[dict, str]:
-    meta: dict = {}
-    body = text
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end != -1:
-            fm_block = text[3:end].strip()
-            body = text[end + 4:].lstrip("\n")
-            for line in fm_block.splitlines():
-                if ":" in line:
-                    key, _, val = line.partition(":")
-                    meta[key.strip()] = val.strip()
-    return meta, body
-
-
-def embed_and_upload(md_results: list[dict]):
-    """
-    Chunk all markdown, embed with BGE-M3, upsert to Pinecone.
-    """
-    from sentence_transformers import SentenceTransformer
-    from pinecone import Pinecone
-
-    print(f"[worker] Loading embedding model: {EMBED_MODEL_ID}")
-    model = SentenceTransformer(EMBED_MODEL_ID, device="cuda")
-
-    # Build chunks
-    all_chunks: list[dict] = []
-    for result in md_results:
-        meta, body = parse_frontmatter(result["markdown"])
-        body = re.sub(r"\n{3,}", "\n\n", body).strip()
-
-        page_chunks = sliding_window_chunks(body, CHUNK_WORDS, OVERLAP_WORDS)
-        if not page_chunks:
-            page_chunks = [meta.get("page", result["name"]) or "(empty page)"]
-
-        base_id = sanitize_id(result["name"])
-        for ci, chunk_text in enumerate(page_chunks):
-            all_chunks.append({
-                "id": f"{base_id}_c{ci:04d}",
-                "text": chunk_text,
-                "metadata": {
-                    "notebook":     meta.get("notebook", ""),
-                    "section":      meta.get("section", result.get("section", "")),
-                    "page":         meta.get("page", result["name"]),
-                    "order":        int(meta["order"]) if meta.get("order", "").isdigit() else result.get("order", 0),
-                    "source_pdf":   meta.get("source_pdf", ""),
-                    "chunk":        ci,
-                    "chunks_total": len(page_chunks),
-                    "text":         chunk_text,
-                    "text_preview": chunk_text[:200],
-                    "user_email":   USER_EMAIL,
-                },
-            })
-
-    print(f"[worker] {len(all_chunks)} chunks from {len(md_results)} pages")
-
-    if not all_chunks:
-        print("[worker] Nothing to embed — skipping")
-        return
-
-    # Embed in batches
-    print("[worker] Embedding chunks...")
-    texts = [c["text"] for c in all_chunks]
-    all_embeddings = []
-    for i in range(0, len(texts), EMBED_BATCH):
-        batch_texts = texts[i : i + EMBED_BATCH]
-        emb = model.encode(batch_texts, normalize_embeddings=True, convert_to_numpy=True)
-        all_embeddings.extend(emb.tolist())
-        print(f"  Embedded {min(i + EMBED_BATCH, len(texts))}/{len(texts)}")
-
-    # Free embedding model
-    import torch
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    # Upsert to Pinecone
-    print("[worker] Upserting to Pinecone...")
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-    index = pc.Index(PINECONE_INDEX)
-
-    for i in range(0, len(all_chunks), UPSERT_BATCH):
-        batch = all_chunks[i : i + UPSERT_BATCH]
-        batch_emb = all_embeddings[i : i + UPSERT_BATCH]
-        vectors = [
-            {"id": c["id"], "values": e, "metadata": c["metadata"]}
-            for c, e in zip(batch, batch_emb)
-        ]
-        index.upsert(vectors=vectors)  # type: ignore[arg-type]
-        print(f"  Upserted {min(i + UPSERT_BATCH, len(all_chunks))}/{len(all_chunks)}")
-
-    print(f"[worker] ✅ {len(all_chunks)} vectors upserted to Pinecone")
-
-
 # ── Main pipeline ────────────────────────────────────────────────────────────
 
 def main():
@@ -562,35 +436,15 @@ def main():
         results = asyncio.run(run_ocr_async(structure_data_list, images_root))
         all_results.extend(results)
 
-    # 4. Also pick up any .md files from resumed/prior runs
+    # 4. Count all produced or resumed MD files to report in done.json
     existing_md_blobs = list_blobs_with_prefix(GCS_BUCKET, f"{USER_EMAIL}/output_md/")
-    # Download any .md we didn't just produce (from prior incomplete runs)
-    produced_names = {sanitize_id(r["name"]) for r in all_results}
-    for md_blob in existing_md_blobs:
-        blob_stem = md_blob.rsplit("/", 1)[-1].replace(".md", "")
-        if blob_stem not in produced_names:
-            local_md = WORK_DIR / "resumed" / f"{blob_stem}.md"
-            download_blob_to_file(GCS_BUCKET, md_blob, local_md)
-            md_text = local_md.read_text(encoding="utf-8")
-            meta, _ = parse_frontmatter(md_text)
-            all_results.append({
-                "name": meta.get("page", blob_stem),
-                "section": meta.get("section", ""),
-                "order": int(meta["order"]) if meta.get("order", "").isdigit() else 0,
-                "markdown": md_text,
-            })
+    pages_processed = len(existing_md_blobs)
 
-    # 5. Embed and upload to Pinecone
-    if all_results:
-        embed_and_upload(all_results)
-    else:
-        print("[worker] No markdown to embed")
-
-    # 6. Write done.json
+    # 5. Write done.json
     done = json.dumps({
         "status": "completed",
         "user_email": USER_EMAIL,
-        "pages_processed": len(all_results),
+        "pages_processed": pages_processed,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
     upload_string_to_gcs(GCS_BUCKET, f"{USER_EMAIL}/done.json", done, "application/json")

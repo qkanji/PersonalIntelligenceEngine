@@ -38,4 +38,9 @@ def publish_job_notification(
     message_id = future.result()
     print(f"Published Pub/Sub message: {message_id}")
 
-publish_job_notification("personal-intelligence-engine", "rag-jobs-pending", "qayim.kanji@ashbury.ca", "pie-data")
+if __name__ == "__main__":
+    project_id = os.environ["GCP_PROJECT"]
+    topic_name = os.environ.get("PUBSUB_TOPIC", "rag-jobs-pending")
+    user_email = os.environ["USER_EMAIL"]
+    bucket_name = os.environ["GCS_BUCKET"]
+    publish_job_notification(project_id, topic_name, user_email, bucket_name)

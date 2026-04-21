@@ -48,8 +48,6 @@ RUN python -m pip install --no-cache-dir --prefer-binary \
 # Install remaining worker dependencies in a separate layer.
 RUN python -m pip install --no-cache-dir --prefer-binary \
     -c /tmp/constraints.txt \
-    sentence-transformers \
-    pinecone \
     google-cloud-storage \
     gcloud-aio-storage \
     aiohttp \

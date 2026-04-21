@@ -30,7 +30,7 @@ RUNPOD_CLOUD_TYPE: str = _env("RUNPOD_CLOUD_TYPE", "COMMUNITY")
 RUNPOD_CONTAINER_DISK: int = int(_env("RUNPOD_CONTAINER_DISK", "35"))  # GB
 
 # ── Google Cloud ────────────────────────────────────────────────────────────
-GCS_BUCKET: str = _env("GCS_BUCKET", "pie-data")
+GCS_BUCKET: str = _required_env("GCS_BUCKET")
 GCP_PROJECT: str = _env("GCP_PROJECT", "personal-intelligence-engine")
 
 # Service account key JSON (base64-encoded) passed to the worker pod
@@ -38,7 +38,7 @@ GCP_SA_KEY_JSON_B64: str = _env("GCP_SA_KEY_JSON_B64", "")
 
 # ── Pinecone ────────────────────────────────────────────────────────────────
 PINECONE_API_KEY: str = _required_env("PINECONE_API_KEY")
-PINECONE_INDEX: str = _env("PINECONE_INDEX", "qayim-bge-m3-index")
+PINECONE_INDEX: str = _required_env("PINECONE_INDEX")
 
 # ── Worker bootstrap ───────────────────────────────────────────────────────
 # URL or GCS path to download worker.py onto the RunPod container.
