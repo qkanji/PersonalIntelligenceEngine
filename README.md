@@ -1,191 +1,98 @@
-# Personal Intelligence Engine - OneNote RAG System
+# Personal Intelligence Engine (PIE)
 
-A local RAG (Retrieval-Augmented Generation) system that uses OneNote notebooks as the primary knowledge base for study and learning. Built for high school students to query their course content stored in OneNote.
+![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
+![Next.js](https://img.shields.io/badge/Next-black?style=for-the-badge&logo=next.js&logoColor=white)
+![React](https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge&logo=react&logoColor=%2361DAFB)
+![Google Cloud](https://img.shields.io/badge/GoogleCloud-%234285F4.svg?style=for-the-badge&logo=google-cloud&logoColor=white)
+![RunPod](https://img.shields.io/badge/RunPod-3F0F4E.svg?style=for-the-badge&logo=runpod&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI-%23412991.svg?style=for-the-badge&logo=openai&logoColor=white)
+![Pinecone](https://img.shields.io/badge/Pinecone-white?style=for-the-badge&logo=pinecone&logoColor=black)
 
-## System Requirements
+**A distributed local-to-cloud RAG pipeline that extracts handwritten OneNote notebooks, orchestrates GPU-accelerated OCR via pre-built Docker containers on spot instances, and serves vector-embedded notes to an AI chat interface.**
 
-- **OS**: Windows 11
-- **Python**: 3.10+
-- **OneNote**: Desktop App installed
-- **GPU**: NVIDIA GPU with CUDA 12.9 (optional, for faster processing)
-- **RAM**: 32GB recommended (for large notebooks)
-- **Storage**: ~5GB for models (downloaded on first run)
+![Demo 1](demo_images/demo1.png)
+![Demo 2](demo_images/demo2.png)
+![Demo 3](demo_images/demo3.png)
 
-## Features
+## Features & Architecture
 
-- 📚 **Page-by-Page Export**: Preserves notebook structure with metadata
-- 🤖 **AI-Powered OCR**: Uses marker-pdf with deep learning models for text, tables, and handwriting
-- ⚡ **GPU Acceleration**: Automatic CUDA support for faster processing
-- 🔍 **Vector Search**: ChromaDB for efficient semantic search
-- 💬 **Chat Interface**: Query your notes with AI assistance (Phase 5)
+- **COM-Bound Local Extraction:** Microsoft Graph API fails to OCR Apple Pencil ink or raw drawing layers. To bypass this, the pipeline uses the Windows COM API against the OneNote 2016 desktop client to programmatically export individual pages as high-fidelity PDFs, which are subsequently rasterized into PNGs and pushed to Google Cloud Storage (GCS).
+- **Spot Instance Orchestration:** Uses a free-tier Google Cloud Platform `e2-micro` VM as an orchestrator. It listens to a Pub/Sub queue and dynamically provisions RunPod Community Cloud 4090 Spot Instances to execute high-throughput containerized OCR tasks.
+- **Containerized Inference (Zero Cold-Start Waste):** The worker environment is baked into a custom Docker image containing PyTorch, CUDA bindings, and vLLM. The orchestrator instructs RunPod to pull this image and injects all required environment variables directly into the container's `cmd` execution payload. This completely eliminates expensive runtime setup latency (installing dependencies/model weights) during spot instance boots.
+- **Fault-Tolerant Vision-Language Processing:** The containerized worker utilizes vLLM streaming to evaluate the community-quantized `lovedheart/Qwen3.5-9B-FP8` model, translating handwritten PNGs to Markdown. By deploying a pre-quantized FP8 model, the container aggressively maximizes memory efficiency and inference throughput on the allocated 4090s. It writes `.md` files to GCS sequentially. If a spot instance is preempted, the GCP orchestrator detects the termination via the RunPod API, respawns the pod, and resumes the exact state until a `done.json` marker is emitted.
+- **Vector Retrieval System:** Processed Markdown is embedded locally with OpenAI's `text-embedding-3-small` and upserted to Pinecone.
+- **Next.js Frontend:** A React web application utilizing Vercel's AI SDK to stream responses from `gpt-5-nano`, augmented by the Pinecone retrieval chain, with full Math/KaTeX parsing support.
 
-## Project Phases
+## Tech Stack
 
-### Phase 1: OneNote Extraction
-Export OneNote notebooks as individual PDF pages with structure preserved.
+- **Extraction:** Windows PowerShell COM API, Python `win32com`, `pypdfium2`
+- **Orchestration:** Google Cloud Storage (GCS), GCP Pub/Sub, RunPod API
+- **Cloud Worker:** Docker, PyTorch (cu126), vLLM, `lovedheart/Qwen3.5-9B-FP8`
+- **Retrieval:** OpenAI API (`text-embedding-3-small`), Pinecone GRPC
+- **Frontend:** Next.js (App Router), React, Tailwind CSS, Vercel AI SDK
 
-**For Cloud/SharePoint Notebooks** (recommended):
-1. Export `.onepkg` files from SharePoint/OneDrive OneNote
-2. Import locally into OneNote Desktop (File → Open → Import)
-3. Run the extraction:
-   ```powershell
-   python 1_extract_onenote.py
-   ```
+## Scope & Limitations
 
-**Note**: Direct export from SharePoint notebooks isn't supported by Microsoft's COM API.
+This infrastructure was engineered as a targeted solution for processing personal high school exam notes.
 
-### Phase 2: PDF to Markdown Conversion
-Convert PDF pages to structured Markdown using marker-pdf.
+- **Work in Progress (WIP):** This project is actively in development. Because it is highly unabstracted and constrained, components like the Next.js frontend are exclusively run via local development servers (`npm run dev`) and are not hardened for production deployment.
+- **Data Structure:** It intentionally ignores the `_Content Library` section group specific to standard Class Notebooks to avoid duplicating reference material against personal student notes.
+- **Single-Tenant Architecture:** It relies on strict local directories and hardcoded bucket structures for a single authorized user (`qayim.kanji@ashbury.ca`). The web application is explicitly designed for personal use, hardcoding greetings ("Hi Qayim") and personal avatars into the component tree.
+- **OS Constraint:** The local extraction sequence requires physical Windows hardware with the Microsoft OneNote 2016 desktop application installed.
 
-```powershell
-python 2_ocr_process.py
-```
-
-**What it does**:
-- Loads marker-pdf models (Surya OCR, layout detection, table recognition)
-- Processes each page with GPU acceleration
-- Extracts text, images, tables, and handwritten content
-- Creates Markdown files with full metadata
-- Shows progress with time estimates
-
-**Output**: One `.md` file per page in `notebooks_md/`
-
-### Phase 3-4: Embeddings & Vector Storage
-Generate embeddings and store in ChromaDB.
-
-```powershell
-python 3_generate_embeddings.py
-```
-
-**Models**:
-- **GPU Mode**: BGE-M3 (better quality, multilingual)
-- **CPU Mode**: all-MiniLM-L6-v2 (faster, English-focused)
-
-### Phase 5: Chat Interface
-Query your notebooks using natural language.
-
-```powershell
-python 5_chat.py
-```
-
-Retrieves relevant content and sends to LLM for answers.
-
-## Project Structure
-
-```
-PersonalIntelligenceEngine/
-├── notebooks_pdf/              # Exported PDFs (page-by-page)
-│   └── [Notebook Name]/
-│       ├── _structure.json     # Metadata & page order
-│       └── [Section]/
-│           └── 000_PageName.pdf
-├── notebooks_md/               # Converted Markdown files
-├── chroma_db/                  # Vector embeddings (ChromaDB)
-├── phase1_extract/             # OneNote export modules
-│   ├── discovery.py            # Notebook discovery
-│   ├── export.py               # Export orchestration
-│   ├── structure.py            # XML parsing
-│   ├── batch_export.py         # Batched PDF export
-│   └── powershell.py           # PowerShell utilities
-├── phase2_ocr/                 # PDF processing modules
-│   ├── marker_engine.py        # marker-pdf wrapper
-│   └── utils.py                # Helper functions
-├── 1_extract_onenote.py        # Phase 1: Export notebooks
-├── 2_ocr_process.py            # Phase 2: PDF → Markdown
-├── 3_generate_embeddings.py    # Phase 3-4: Embeddings (TODO)
-├── 5_chat.py                   # Phase 5: Chat interface (TODO)
-├── setup.py                    # Dependency installer
-└── requirements.txt            # Python dependencies
-```
-
-## Getting Started
-
-### 1. Setup Virtual Environment
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-```
-
-### 2. Install Dependencies
-```powershell
-pip install -r requirements.txt
-```
-
-**Or** use the automated installer:
-```powershell
-python setup.py
-```
-
-This will:
-- Detect CUDA availability
-- Install marker-pdf with PyTorch (GPU or CPU)
-- Install sentence-transformers and ChromaDB
-- Configure for optimal performance
-
-### 3. Extract Notebooks (Phase 1)
-```powershell
-python 1_extract_onenote.py
-```
-
-**For SharePoint/Cloud Notebooks**:
-1. Export as `.onepkg` from OneNote Online
-2. Import into OneNote Desktop App
-3. Run the extraction script
-
-### 4. Convert to Markdown (Phase 2)
-```powershell
-python 2_ocr_process.py
-```
-
-First run downloads ~2GB of AI models. Progress shows:
-- Pages processed
-- Time elapsed
-- Estimated time remaining
-
-### 5. Generate Embeddings (Phase 3-4)
-```powershell
-python 3_generate_embeddings.py
-```
-*(Coming soon)*
-
-### 6. Start Chatting (Phase 5)
-```powershell
-python 5_chat.py
-```
-*(Coming soon)*
-
-## Technical Details
-
-### Phase 2: marker-pdf Processing
-
-**Models Used**:
-- **Surya OCR**: Text recognition (supports handwriting)
-- **Layout Detection**: Identifies columns, tables, headers
-- **Table Recognition**: Extracts table structure
-- **OCR Error Detection**: Improves accuracy
-
-**Performance**:
-- **GPU** (RTX 3050): ~15-30 seconds per page
-- **CPU**: ~1-2 minutes per page
-
-**Output Format**:
-```markdown
----
-source_pdf: C:\...\page.pdf
-notebook: Science Notebook
-section: Chemistry/Atoms
-page: Atomic Structure
-order: 5
 ---
 
-# Atomic Structure
+## Architecture Flow
 
-[Extracted content with formatting preserved]
+```mermaid
+graph TD
+    subgraph Local Environment [Windows Desktop]
+        A[OneNote 2016] -->|COM API| B[1_extract_onenote.py]
+        B -->|PDFs| C[b1.py: PDF to PNG]
+    end
+
+    subgraph Google Cloud Platform
+        C -->|Upload Directory| D[(GCS Bucket)]
+        C -->|Publish Event| E[Pub/Sub Queue]
+        E -->|Listen| F[e2-micro Orchestrator]
+    end
+
+    subgraph RunPod [GPU Spot Instances]
+        F -->|Provision & Inject Env Vars| G[Docker Container RTX 4090]
+        G -->|Pull PNGs| D
+        G -->|vLLM / Qwen3.5-9B-FP8| H[Process Markdown]
+        H -->|Write .md & done.json| D
+        F -.->|Polled Health Checks & Restart| G
+    end
+
+    subgraph Web App [Next.js]
+        D -->|Download .md| I[Embed Script]
+        I -->|text-embedding-3-small| J[(Pinecone Vector DB)]
+        K[User Prompt] -->|Semantic Filter| J
+        J -->|Context Documents| L[gpt-5-nano]
+        L --> M[Chat UI]
+    end
 ```
 
-### Why Local?
+## Local Setup
 
-- ✅ **Free**: No API costs
-- ✅ **Private**: Your data stays on your computer
-- ✅ **Offline**: Works without internet
-- ✅ **Fast**: GPU acceleration when available
+**Please reference `SETUP.md` for exhaustive instructions on securely configuring the required environment variables and API keys prior to execution.**
+
+1.  **Extract Data Pipeline:** Dump the Windows notebook tree to PDFs based on COM API interactions:
+    ```powershell
+    python 1_extract_onenote.py
+    ```
+2.  **Stage to Cloud:** Render those PDFs to PNGs and stage them in GCS while publishing to the Pub/Sub orchestrator:
+    ```powershell
+    python b1.py --user-email "you@example.com"
+    ```
+    _(The remote GCP orchestrator takes over here, booting the RunPod Docker container. Wait until `done.json` populates in your GCS bucket.)_
+3.  **Embed:** Pull the finalized `.md` cloud output, batch process the tokens with `tiktoken`, and populate your Pinecone index:
+    ```powershell
+    python embed_from_gcs.py
+    ```
+4.  **Start Server:** Boot the Next.js chat interface:
+    ```powershell
+    cd webapp
+    npm run dev
+    ```
