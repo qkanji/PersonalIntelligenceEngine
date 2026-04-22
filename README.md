@@ -65,12 +65,16 @@ graph TD
         F -.->|Polled Health Checks & Restart| G
     end
 
-    subgraph Web App [Next.js]
-        D -->|Download .md| I[Embed Script]
-        I -->|text-embedding-3-small| J[(Pinecone Vector DB)]
-        K[User Prompt] -->|Semantic Filter| J
-        J -->|Context Documents| L[gpt-5-nano]
-        L --> M[Chat UI]
+    subgraph Local Computer [Local Vector Indexing]
+        D -->|Download .md| I[embed_from_gcs.py]
+        I -->|OpenAI text-embedding-3-small| J[(Pinecone Vector DB)]
+    end
+
+    subgraph Web App [Next.js RAG Loop]
+        K[Chat UI] -->|User Prompt| L[Vercel AI SDK]
+        L -->|Semantic Filter| J
+        J -->|Context Documents| M[gpt-5-nano]
+        M -->|Stream Response| K
     end
 ```
 
