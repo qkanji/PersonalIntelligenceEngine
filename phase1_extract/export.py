@@ -86,6 +86,7 @@ def export_notebook_to_pdf(notebook_id, notebook_name, output_dir):
         batch_success = 0
         batch_failed = 0
         failed_errors = {}
+        failed_files = {}
 
         for job in batch_jobs:
             page = job['page']
@@ -108,15 +109,18 @@ def export_notebook_to_pdf(notebook_id, notebook_name, output_dir):
                 # Track unique errors
                 if error and error not in failed_errors:
                     failed_errors[error] = 0
+                    failed_files[error] = []
                 if error:
                     failed_errors[error] += 1
+                    failed_files[error].append(page_pdf_path)
 
         print(f" ✓ {batch_success} | ✗ {batch_failed}")
 
-        # Show sample errors
+        # Show sample errors and the files that failed
         if failed_errors and batch_failed > 0:
             for err, count in list(failed_errors.items())[:2]:
                 print(f"    Sample error ({count}x): {err}")
+                print(f"    Failed files: {', '.join(failed_files[err][:5])}{' ...' if len(failed_files[err]) > 5 else ''}")
 
 
     print(f"\n  Exported: {len(exported_pages)}/{len(pages)} pages")
