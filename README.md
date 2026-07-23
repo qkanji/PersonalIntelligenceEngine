@@ -10,7 +10,7 @@
 
 **A distributed local-to-cloud RAG pipeline that extracts handwritten OneNote notebooks, orchestrates GPU-accelerated OCR via pre-built Docker containers on spot instances, and serves vector-embedded notes to an AI chat interface.**
 
-**Video Link Here**
+https://github.com/user-attachments/assets/0049f0ad-a552-4c91-b097-44c39fc15fdf
 
 ## Architecture Flow
 
